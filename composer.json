@@ -1,0 +1,15 @@
+{
+    "name": "alfacode-team/hkm-plugin-commands",
+    "description": "HKM Kernel plugin providing 'system.commands'.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["hkm-kernel", "plugin", "php", "system.commands"],
+    "require": {
+        "php": ">=8.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Plugins\\Commands\\": ""
+        }
+    }
+}
