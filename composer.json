@@ -3,13 +3,60 @@
     "description": "HKM Kernel plugin providing 'system.commands'.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["hkm-kernel", "plugin", "php", "system.commands"],
+    "keywords": [
+        "hkm-kernel",
+        "plugin",
+        "php",
+        "system.commands"
+    ],
     "require": {
-        "php": ">=8.4"
+        "php": ">=8.4",
+        "alfacode-team/php-service-platform": "dev-master",
+        "alfacode-team/hkm-plugin-logger": "dev-main"
     },
     "autoload": {
         "psr-4": {
             "Plugins\\Commands\\": ""
+        }
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11 || ^12 || ^13"
+    },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/hkm-kernel"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/hkm-plugin-logger"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/http"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/php-io-cli"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/AlfaCode-Team/Let-Migrate"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/hakrichTech/bindIt"
+        },
+        {
+            "type": "vcs",
+            "url": "https://github.com/hakrichTech/type-alias"
+        }
+    ],
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\Unit\\Commands\\": "tests/"
         }
     }
 }
