@@ -266,10 +266,13 @@ final class Provider implements ModuleContract
      */
     private function withPluginMigrationPaths(array $config): array
     {
-        $pluginPaths = glob(Paths::base('plugins/*/database/migrations'), GLOB_ONLYDIR) ?: [];
-        if ($pluginPaths === []) {
-            return $config;
-        }
+        // $pluginPaths = glob(Paths::base('plugins/*/database/migrations'), GLOB_ONLYDIR) ?: [];
+        // if ($pluginPaths === []) {
+        //     return $config;
+        // }
+        // We don't use plugin migration paths for now.
+        // Plugin database migrations are populated into the project that uses the plugin.
+        $pluginPaths = [];
 
         $existing = $config['paths'] ?? (isset($config['path']) ? [(string) $config['path']] : []);
         $config['paths'] = array_values(array_unique([...$existing, ...$pluginPaths]));
