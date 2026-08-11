@@ -6,6 +6,7 @@ namespace Plugins\Commands\Infrastructure\Http\Commands;
 
 use AlfacodeTeam\PhpIoCli\AbstractCommand;
 use AlfacodeTeam\PhpIoCli\Depends\Colors;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Routing\RouteIndex;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Support\Paths;
 
 /**
@@ -21,10 +22,13 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Support\Paths;
  *   hkm route:list
  *   hkm route:list --method=GET
  *   hkm route:list --path=/api
+ *   hkm route:list --domain=shop.local
+ *   hkm route:list --named
  *   hkm route:list --json
  *
- * Each manifest entry is keyed by "METHOD path" and carries:
- *   handler, module, solves, filters[], requires[], overrides
+ * Each manifest entry is keyed by "METHOD /path" — or "METHOD@domain /path" when
+ * the route belongs to a DOMAIN GROUP — and carries:
+ *   handler, module, solves, name, filters[], requires[], faces[], domain, overrides
  */
 final class RouteListCommand extends AbstractCommand
 {
@@ -40,20 +44,33 @@ per-route module requires.
 Project routes resolve under the synthetic "__project__" scope; a project route
 that overrides a plugin route shows the overridden module.
 
+A route grouped under a domain shows that host in the Domain column; an
+UNGROUPED route shows "*" because every host reaches it.
+
 Options:
   --method=VERB   Only routes matching this HTTP method (case-insensitive)
   --path=PREFIX   Only routes whose path starts with PREFIX
+  --domain=HOST   Only routes reachable on HOST — its domain groups (exact,
+                  wildcard or bare subdomain) plus every ungrouped route
+  --filter=ALIAS  Only routes running that filter (auth, throttle, ...)
+  --named         Only routes addressable by route('name')
   --json          Emit the raw manifest as JSON (for scripting)
 
 Examples:
   hkm route:list
   hkm route:list --method=POST
   hkm route:list --path=/api/invoices
+  hkm route:list --domain=organizer.africavoting.local
+  hkm route:list --filter=auth
+  hkm route:list --named
   hkm route:list --json
 HELP;
 
         $this->addOption('method', 'm', 'Filter by HTTP method', acceptsValue: true);
         $this->addOption('path',   'p', 'Filter by path prefix',  acceptsValue: true);
+        $this->addOption('domain', 'd', 'Only routes reachable on this host', acceptsValue: true);
+        $this->addOption('filter', 'f', 'Only routes running this filter alias', acceptsValue: true);
+        $this->addOption('named',  'n', 'Only named routes');
         $this->addOption('json',   'j', 'Output the manifest as JSON');
     }
 
@@ -69,10 +86,7 @@ HELP;
             return self::FAILURE;
         }
 
-        $methodFilter = strtoupper(trim((string) $this->option('method', '')));
-        $pathFilter   = (string) $this->option('path', '');
-
-        $rows = $this->filterRoutes($manifest, $methodFilter, $pathFilter);
+        $rows = $this->filterRoutes($manifest);
 
         if ($this->hasOption('json')) {
             echo json_encode($rows, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
@@ -88,20 +102,22 @@ HELP;
 
         $tableRows = [];
         foreach ($rows as $key => $entry) {
-            [$method, $path] = array_pad(explode(' ', $key, 2), 2, '');
+            ['method' => $method, 'domain' => $domain, 'path' => $path] = RouteIndex::parseKey((string) $key);
 
             $tableRows[] = [
                 $this->colorMethod($method),
+                // '*' — an ungrouped route is GLOBAL: every host reaches it.
+                $domain === '' ? Colors::muted('*') : Colors::wrap($domain, Colors::CYAN),
                 $path,
+                (string) ($entry['name'] ?? '') !== '' ? (string) $entry['name'] : Colors::muted('—'),
                 (string) ($entry['handler'] ?? '—'),
                 $this->scopeLabel($entry),
                 $this->listLabel($entry['filters'] ?? []),
-                $this->listLabel($entry['requires'] ?? []),
             ];
         }
 
         $this->table()
-            ->headers(['Method', 'Path', 'Handler', 'Scope', 'Filters', 'Requires'])
+            ->headers(['Method', 'Domain', 'Path', 'Name', 'Handler', 'Scope', 'Filters'])
             ->rows($tableRows)
             ->render();
 
@@ -131,12 +147,22 @@ HELP;
      * @param array<string, array<string, mixed>> $manifest
      * @return array<string, array<string, mixed>>
      */
-    private function filterRoutes(array $manifest, string $methodFilter, string $pathFilter): array
+    private function filterRoutes(array $manifest): array
     {
+        $methodFilter = strtoupper(trim((string) $this->option('method', '')));
+        $pathFilter   = (string) $this->option('path', '');
+        $filterAlias  = trim((string) $this->option('filter', ''));
+        $host         = trim((string) $this->option('domain', ''));
+        $namedOnly    = $this->hasOption('named');
+
+        // The domain groups this host could match, most specific first — the same
+        // expansion the router performs, so the listing matches what it will serve.
+        $hostGroups = $host === '' ? [] : RouteIndex::hostCandidates($host);
+
         $filtered = [];
 
         foreach ($manifest as $key => $entry) {
-            [$method, $path] = array_pad(explode(' ', $key, 2), 2, '');
+            ['method' => $method, 'domain' => $domain, 'path' => $path] = RouteIndex::parseKey((string) $key);
 
             if ($methodFilter !== '' && strtoupper($method) !== $methodFilter) {
                 continue;
@@ -144,18 +170,52 @@ HELP;
             if ($pathFilter !== '' && !str_starts_with($path, $pathFilter)) {
                 continue;
             }
+            if ($namedOnly && ($entry['name'] ?? null) === null) {
+                continue;
+            }
+            // An ungrouped route answers on every host, so it belongs in every
+            // host's listing — exactly how the matcher treats it.
+            if ($hostGroups !== [] && $domain !== '' && !in_array($domain, $hostGroups, true)) {
+                continue;
+            }
+            if ($filterAlias !== '' && !in_array($filterAlias, $this->aliases($entry), true)) {
+                continue;
+            }
 
             $filtered[$key] = $entry;
         }
 
-        // Deterministic order: path, then method.
+        // Deterministic order: domain, then path, then method — so everything
+        // answering one host reads together.
         uksort($filtered, static function (string $a, string $b): int {
-            [$ma, $pa] = array_pad(explode(' ', $a, 2), 2, '');
-            [$mb, $pb] = array_pad(explode(' ', $b, 2), 2, '');
-            return [$pa, $ma] <=> [$pb, $mb];
+            $pa = RouteIndex::parseKey($a);
+            $pb = RouteIndex::parseKey($b);
+            return [$pa['domain'], $pa['path'], $pa['method']]
+               <=> [$pb['domain'], $pb['path'], $pb['method']];
         });
 
         return $filtered;
+    }
+
+    /**
+     * The filter ALIASES a route runs — "throttle:60,1" is the alias "throttle".
+     *
+     * @param array<string, mixed> $entry
+     * @return list<string>
+     */
+    private function aliases(array $entry): array
+    {
+        // The compiler precomputes these; fall back to parsing for a manifest
+        // compiled by an older kernel.
+        $specs = $entry['filter_specs'] ?? null;
+        if (is_array($specs)) {
+            return array_map(static fn($s): string => (string) ($s['alias'] ?? ''), $specs);
+        }
+
+        return array_map(
+            static fn($f): string => explode(':', trim((string) $f), 2)[0],
+            is_array($entry['filters'] ?? null) ? $entry['filters'] : [],
+        );
     }
 
     private function colorMethod(string $method): string

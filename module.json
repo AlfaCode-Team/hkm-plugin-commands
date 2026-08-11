@@ -1,7 +1,7 @@
 {
     "name": "commands",
     "version": "1.0.1",
-    "kernel": "^1.0",
+    "kernel": "^1.2",
     "solves": "system.commands",
     "type": "module",
     "requires": [
