@@ -10,7 +10,6 @@ use Plugins\Commands\Infrastructure\Persistence\{
     BackupRepository,
     ApprovalRepository,
     MigrationRepository,
-    ModuleRepository,
 };
 
 /**
@@ -40,7 +39,6 @@ final class CommandsInfrastructureService
         private readonly BackupRepository $backups,
         private readonly ApprovalRepository $approvals,
         private readonly MigrationRepository $migrations,
-        private readonly ModuleRepository $modules,
     ) {}
 
     // ════════════════════════════════════════════════════════════════
@@ -238,20 +236,6 @@ final class CommandsInfrastructureService
     }
 
     // ════════════════════════════════════════════════════════════════
-    //  MODULE MANAGEMENT API
-    // ════════════════════════════════════════════════════════════════
-
-    public function addModule($request)
-    {
-        return $this->modules->add($request);
-    }
-
-    public function removeModule($request)
-    {
-        return $this->modules->remove($request);
-    }
-
-    // ════════════════════════════════════════════════════════════════
     //  DIRECT REPOSITORY ACCESS (for advanced use cases)
     // ════════════════════════════════════════════════════════════════
 
@@ -278,10 +262,5 @@ final class CommandsInfrastructureService
     public function migrations(): MigrationRepository
     {
         return $this->migrations;
-    }
-
-    public function modules(): ModuleRepository
-    {
-        return $this->modules;
     }
 }
