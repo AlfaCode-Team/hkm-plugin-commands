@@ -4,13 +4,9 @@
     "kernel": "^1.2",
     "solves": "system.commands",
     "type": "module",
-    "requires": [
-        "logging.application"
-    ],
+    "requires": [],
     "exposes": [],
     "commands": [
-        "module:add",
-        "module:remove",
         "migrate:run",
         "migrate:rollback",
         "migrate:reset",
@@ -36,7 +32,8 @@
         "tenant:refresh",
         "tenant:reset",
         "tenant:rollback",
-        "tenant:status"
+        "tenant:status",
+        "route:list"
     ],
     "config": []
 }

@@ -10,30 +10,29 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Cli\CliPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Http\HttpPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Pipelines\Worker\WorkerPipeline;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Events\EventBus;
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\LoggerPort;
 use AlfacodeTeam\PhpServicePlatform\Commands\Migrate\CliCommandFactory as MigrateFactory;
 use Plugins\Commands\Configuration\EnvironmentConfigurationLoader;
 use Plugins\Commands\Exceptions\ConfigurationException;
 use Plugins\Commands\Configuration\ConfigurationValidator;
-use Plugins\Commands\Infrastructure\Http\Commands\{ModuleAddCommand, ModuleRemoveCommand, RouteListCommand};
-use Plugins\Commands\Application\Services\ModuleManagementService;
+use Plugins\Commands\Infrastructure\Http\Commands\RouteListCommand;
 use Plugins\Commands\Application\Services\MigrationService;
-use Plugins\Commands\API\Contracts\{ModuleManagementServiceContract, MigrationServiceContract};
+use Plugins\Commands\API\Contracts\MigrationServiceContract;
 use Plugins\Commands\Infrastructure\Persistence\{
-    ModuleRepository,
     MigrationRepository,
     DeploymentLockRepository,
     CommandAuditLogRepository,
     BackupRepository,
     ApprovalRepository,
 };
-use Plugins\Commands\Infrastructure\Gateways\{ShellGateway, LetMigrateGateway};
+use Plugins\Commands\Infrastructure\Gateways\LetMigrateGateway;
 use Plugins\Commands\Application\Services\CommandsInfrastructureService;
 use Plugins\Commands\Logging\CommandExecutionLogger;
+use Plugins\Commands\Logging\FallbackFileLogger;
 use Plugins\Commands\Deployment\DeploymentLockManager;
 use Plugins\Commands\Backup\BackupManager;
 use Plugins\Commands\Approval\MigrationApprovalManager;
 use Plugins\Commands\Validation\PreFlightValidator;
-use AlfacodeTeam\PhpIoCli\Depends\Shell;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Support\Paths;
 
 /**
@@ -42,8 +41,6 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Support\Paths;
  * Solves: system.commands (framework-level commands for infrastructure)
  *
  * Commands registered:
- *   • module:add — add a git submodule + composer registration
- *   • module:remove — remove a git submodule + cleanup
  *   • migrate:* (25+) — database migrations via LetMigrate
  *   • make:* — scaffold new migrations, seeders, factories
  *   • seed:run — execute database seeders
@@ -104,12 +101,6 @@ final class Provider implements ModuleContract
                 $projectRoot
             )
         );
-        $container->singleton(ModuleRepository::class, fn($c) =>
-            new ModuleRepository(
-                $c->make(ShellGateway::class),
-                $projectRoot
-            )
-        );
 
         // Register single infrastructure service that aggregates all repositories
         $container->singleton(CommandsInfrastructureService::class, fn($c) =>
@@ -119,7 +110,6 @@ final class Provider implements ModuleContract
                 $c->make(BackupRepository::class),
                 $c->make(ApprovalRepository::class),
                 $c->make(MigrationRepository::class),
-                $c->make(ModuleRepository::class),
             )
         );
 
@@ -128,10 +118,10 @@ final class Provider implements ModuleContract
         // NOTE: this used to bind Psr\Log\LoggerInterface to a NullLogger — the
         // ONLY logger binding in the codebase — so every command-audit line, and
         // every line the Database/Tenancy/EventBus components wrote, was silently
-        // discarded. Resolve the real LoggerPort instead; the Logger plugin
-        // supplies a file-backed default when the project has not wired one.
+        // discarded. Resolve the real LoggerPort instead, and fall back to a
+        // file-backed logger of our own rather than to nothing — see logger().
         $container->singleton(CommandExecutionLogger::class, fn($c) =>
-            new CommandExecutionLogger($c->make(\AlfacodeTeam\PhpServicePlatform\Kernel\Ports\LoggerPort::class))
+            new CommandExecutionLogger(self::logger($c))
         );
         $container->singleton(DeploymentLockManager::class, fn($c) =>
             new DeploymentLockManager($c->make(CommandsInfrastructureService::class))
@@ -147,21 +137,11 @@ final class Provider implements ModuleContract
         );
 
         // Register gateways
-        $container->singleton(ShellGateway::class, fn($c) =>
-            new ShellGateway()
-        );
         $container->singleton(LetMigrateGateway::class, fn($c) =>
             new LetMigrateGateway()
         );
 
         // Register public service contracts
-        $container->bind(ModuleManagementServiceContract::class, fn($c) =>
-            new ModuleManagementService(
-                $c->make(ModuleRepository::class),
-                $c->make(CommandExecutionLogger::class),
-                $c->make(DeploymentLockManager::class),
-            )
-        );
         $container->bind(MigrationServiceContract::class, fn($c) =>
             new MigrationService(
                 $c->make(MigrationRepository::class),
@@ -176,23 +156,12 @@ final class Provider implements ModuleContract
 
     public function boot(HttpPipeline $http, CliPipeline $cli, WorkerPipeline $worker, EventBus $events): void
     {
-        // All registration below builds DB-backed services, a scoped container,
-        // and 25+ factory-injected migration command instances. That work is
-        // pointless (and expensive) on the HTTP/worker path, where boot() still
-        // runs but the CLI is never invoked. Defer it so it executes ONLY when
-        // the CLI actually materializes its commands.
+        // All registration below reads the migration configuration and builds
+        // 25+ factory-injected command instances. That work is pointless (and
+        // expensive) on the HTTP/worker path, where boot() still runs but the
+        // CLI is never invoked. Defer it so it executes ONLY when the CLI
+        // actually materializes its commands.
         $cli->defer(function (CliPipeline $cli): void {
-            // ── Module Management Commands ────────────────────────────────
-            // These commands depend on module-scoped services. Build a scoped
-            // ModuleContainer (mirroring the OnDemandLoader) so register() wires
-            // the service graph, then resolve the commands with deps injected.
-            $scoped = new ModuleContainer($cli->container());
-            $scoped->setScope($this->solves());
-            $this->register($scoped);
-
-            $cli->command($scoped->makeInScope(ModuleAddCommand::class, $this->solves()));
-            $cli->command($scoped->makeInScope(ModuleRemoveCommand::class, $this->solves()));
-
             // Read-only introspection — no DB deps, resolves straight from the manifest.
             $cli->command(new RouteListCommand());
 
@@ -232,6 +201,36 @@ final class Provider implements ModuleContract
                 $cli->command($commandInstance);
             }
         });
+    }
+
+    /**
+     * The LoggerPort to hand this plugin's own components.
+     *
+     * Resolved from the container when SOMETHING bound it — a project wiring
+     * `->withPorts([LoggerPort::class => ...])` reaches us through the
+     * CoreContainer — and satisfied by our own file-backed logger when nothing
+     * did.
+     *
+     * The fallback is not belt-and-braces. Provider::boot() registers commands
+     * from a container this plugin builds by hand, which is NOT the one
+     * OnDemandLoader assembles from the dependency graph; nothing there runs
+     * another module's register(), so the Logger plugin's binding is invisible
+     * to us even when that plugin is installed and enabled. Without a fallback
+     * the port is simply absent and `make()` throws EntryNotFoundException
+     * before the CLI can list a single command — logging a migration is not
+     * worth being unable to run one.
+     */
+    private static function logger(ModuleContainer $container): LoggerPort
+    {
+        if ($container->has(LoggerPort::class)) {
+            $resolved = $container->make(LoggerPort::class);
+
+            if ($resolved instanceof LoggerPort) {
+                return $resolved;
+            }
+        }
+
+        return new FallbackFileLogger();
     }
 
     private function loadConfiguration(): array
