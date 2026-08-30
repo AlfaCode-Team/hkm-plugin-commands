@@ -23,6 +23,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Support\Paths;
  *   hkm route:list --method=GET
  *   hkm route:list --path=/api
  *   hkm route:list --domain=shop.local
+ *   hkm route:list --unfiltered --plugin
  *   hkm route:list --named
  *   hkm route:list --json
  *
@@ -53,6 +54,8 @@ Options:
   --domain=HOST   Only routes reachable on HOST — its domain groups (exact,
                   wildcard or bare subdomain) plus every ungrouped route
   --filter=ALIAS  Only routes running that filter (auth, throttle, ...)
+  --unfiltered    Only routes running NO filter — the attack-surface audit
+  --plugin        Only plugin-owned routes (exclude the project's own)
   --named         Only routes addressable by route('name')
   --json          Emit the raw manifest as JSON (for scripting)
 
@@ -62,6 +65,7 @@ Examples:
   hkm route:list --path=/api/invoices
   hkm route:list --domain=organizer.africavoting.local
   hkm route:list --filter=auth
+  hkm route:list --unfiltered --plugin      # what did my plugins expose unguarded?
   hkm route:list --named
   hkm route:list --json
 HELP;
@@ -71,6 +75,8 @@ HELP;
         $this->addOption('domain', 'd', 'Only routes reachable on this host', acceptsValue: true);
         $this->addOption('filter', 'f', 'Only routes running this filter alias', acceptsValue: true);
         $this->addOption('named',  'n', 'Only named routes');
+        $this->addOption('unfiltered', 'u', 'Only routes running NO filter at all (attack-surface audit)');
+        $this->addOption('plugin', '', 'Only routes owned by plugins (exclude the project\'s own)');
         $this->addOption('json',   'j', 'Output the manifest as JSON');
     }
 
@@ -154,6 +160,13 @@ HELP;
         $filterAlias  = trim((string) $this->option('filter', ''));
         $host         = trim((string) $this->option('domain', ''));
         $namedOnly    = $this->hasOption('named');
+        // The inverse of --filter, and the one an audit actually asks: what did
+        // enabling these plugins expose with no filter in front of it? A route
+        // with no filter is not automatically unsafe — it may be a public form,
+        // robots.txt, or a page shell whose data sits behind a filtered /ajx
+        // endpoint — but it IS the set that has to be justified one by one.
+        $unfilteredOnly = $this->hasOption('unfiltered');
+        $pluginOnly     = $this->hasOption('plugin');
 
         // The domain groups this host could match, most specific first — the same
         // expansion the router performs, so the listing matches what it will serve.
@@ -179,6 +192,15 @@ HELP;
                 continue;
             }
             if ($filterAlias !== '' && !in_array($filterAlias, $this->aliases($entry), true)) {
+                continue;
+            }
+            if ($unfilteredOnly && $this->aliases($entry) !== []) {
+                continue;
+            }
+            // Project routes are the project's own and were written deliberately;
+            // plugin routes arrived with an install. Separating them is what makes
+            // the audit about surface the project did not author.
+            if ($pluginOnly && ($entry['module'] ?? null) === null) {
                 continue;
             }
 
